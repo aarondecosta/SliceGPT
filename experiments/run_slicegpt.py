@@ -10,10 +10,9 @@ import shutil
 import torch
 import wandb
 
-from slicegpt import data_utils, gpu_utils, hf_utils, layernorm_fusion, rotate, utils
+from slicegpt import data_utils, gpu_utils, hf_utils, layernorm_fusion, rotate, utils, block_importance
 from slicegpt.config import config
 from slicegpt.slicing_scheduler import ConstSlicingScheduler
-
 
 def slicing_arg_parser(interactive: bool = True) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -101,6 +100,13 @@ def slicing_arg_parser(interactive: bool = True) -> argparse.Namespace:
         help="PyTorch device to use. Example values are 'cpu', 'cuda', 'cuda:0'. If not specified it will be defaulted to 'cuda' if available and 'cpu' otherwise.",
     )
 
+    # Block Importance specific arguments
+    parser.add_argument("--do-block-importance", action="store_true", default=False, help="Collect block importance scores.")
+    parser.add_argument("--angular", action="store_true", default=False, help="Use angular importance.")
+    parser.add_argument("--bi-seq-len", type=int, default=2048, help="Sequence length for block importance.")
+    parser.add_argument("--bi-batch-size", type=int, default=1, help="Batch size for block importance.")
+    parser.add_argument("--bi-nsamples", type=int, default=128, help="Number of samples of the calibration data to load.")
+
     return parser.parse_args() if interactive else parser.parse_args('')
 
 
@@ -124,7 +130,7 @@ def process_slicing_args(args):
 
 def slicing_main(args: argparse.Namespace) -> None:
     logging.info("Running SliceGPT experiment.")
-    logging.info(f"PyTorch device: {config.device}")
+    logging.info(f"PyTorch device: {config.device, torch.cuda.get_device_name()}")
     logging.info(f"Number of available cuda devices: {torch.cuda.device_count()}")
 
     try:
@@ -170,6 +176,15 @@ def slicing_main(args: argparse.Namespace) -> None:
         varied_seqlen=args.varied_seqlen,
         seed=args.seed,
     )
+    bi_train_loader = data_utils.prepare_dataloader(
+        dataset=train_dataset,
+        tokenizer=tokenizer,
+        max_seqlen=args.bi_seq_len,
+        batch_size=args.bi_batch_size,
+        nsamples=args.bi_nsamples,
+        varied_seqlen=args.varied_seqlen,
+        seed=args.seed,
+    )
     test_loader = data_utils.prepare_test_dataloader(
         dataset=test_dataset, tokenizer=tokenizer, batch_size=args.ppl_eval_batch_size
     )
@@ -190,6 +205,16 @@ def slicing_main(args: argparse.Namespace) -> None:
         wandb.log({"original_ppl": dataset_ppl})
         model.cpu()
         utils.cleanup_memory()
+
+    # calculate block importance
+    if args.do_block_importance:
+        reset_model_device()
+        logging.info(f'Collecting block importance scores')
+        bi_scores = block_importance.collect_block_importances(model_adapter, bi_train_loader, args.angular)
+        logging.info(f"Block importance scores : {bi_scores}")
+        model_adapter.model.cpu()
+        utils.cleanup_memory()
+
 
     # replace modules with compressible equivalents
     layernorm_fusion.replace_layers(model_adapter)

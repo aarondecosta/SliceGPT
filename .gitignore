@@ -9,6 +9,9 @@ experiments/sliced_models
 # logs
 log/
 
+# models
+models/
+
 # wandb
 wandb/*
 experiments/wandb/*

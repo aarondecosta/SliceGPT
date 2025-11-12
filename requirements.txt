@@ -1,0 +1,8 @@
+accelerate
+datasets == 2.18.0
+ml-collections
+numpy
+torch
+tqdm
+transformers == 4.41.2
+wandb
