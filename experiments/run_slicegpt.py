@@ -8,11 +8,13 @@ import pathlib
 import shutil
 
 import torch
+import numpy as np
 import wandb
 
 from slicegpt import data_utils, gpu_utils, hf_utils, layernorm_fusion, rotate, utils, block_importance
 from slicegpt.config import config
-from slicegpt.slicing_scheduler import ConstSlicingScheduler
+from slicegpt.slicing_scheduler import ConstSlicingScheduler, ConfigSlicingScheduler
+from slicegpt.model_adapter import SlicingConfig
 
 def slicing_arg_parser(interactive: bool = True) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -99,6 +101,8 @@ def slicing_arg_parser(interactive: bool = True) -> argparse.Namespace:
         default=None,
         help="PyTorch device to use. Example values are 'cpu', 'cuda', 'cuda:0'. If not specified it will be defaulted to 'cuda' if available and 'cpu' otherwise.",
     )
+
+    parser.add_argument("--slicing-scheduler", type=str, choices=["const","config"], default="const", help="Slicing schedule scheme to use.")
 
     # Block Importance specific arguments
     parser.add_argument("--do-block-importance", action="store_true", default=False, help="Collect block importance scores.")
@@ -209,9 +213,9 @@ def slicing_main(args: argparse.Namespace) -> None:
     # calculate block importance
     if args.do_block_importance:
         reset_model_device()
-        logging.info(f'Collecting block importance scores')
+        logging.info(f'Collecting block influence scores')
         bi_scores = block_importance.collect_block_importances(model_adapter, bi_train_loader, args.angular)
-        logging.info(f"Block importance scores : {bi_scores}")
+        logging.info(f"Block influence scores : {bi_scores}")
         model_adapter.model.cpu()
         utils.cleanup_memory()
 
@@ -238,15 +242,43 @@ def slicing_main(args: argparse.Namespace) -> None:
     original_param_count = sum(int(p.nelement()) for p in model.parameters())
     logging.info(f'Original model parameters: {original_param_count:,d}')
 
-    # compute new embedding dimension given the desired sparsity level
-    new_embedding_dimension = int((1 - args.sparsity) * model_adapter.hidden_size)
-    # round (down) to the nearest multiple of round_interval
-    new_embedding_dimension -= new_embedding_dimension % args.round_interval
-    logging.info(
-        f"New embedding dimension: {new_embedding_dimension} (sparsity {100*(1 - new_embedding_dimension / model_adapter.hidden_size):.4f} %)"
-    )
 
-    scheduler = ConstSlicingScheduler(new_embedding_dimension)
+    if args.slicing_scheduler == "const":
+        # compute new embedding dimension given the desired sparsity level
+        new_embedding_dimension = int((1 - args.sparsity) * model_adapter.hidden_size)
+        # round (down) to the nearest multiple of round_interval
+        new_embedding_dimension -= new_embedding_dimension % args.round_interval
+        logging.info(
+            f"New embedding dimension: {new_embedding_dimension} (sparsity {100*(1 - new_embedding_dimension / model_adapter.hidden_size):.4f} %)"
+        )
+        scheduler = ConstSlicingScheduler(new_embedding_dimension)
+    elif args.slicing_scheduler == "config" and args.do_block_importance:
+        bi_scores = np.array(bi_scores)
+        bi_scores -= bi_scores.mean()
+        bi_scores = 1 + bi_scores
+        new_dims = bi_scores * model_adapter.hidden_size * (1-args.sparsity)
+        new_dims = new_dims.round().astype(int)
+        new_dims = (new_dims / args.round_interval).round() * args.round_interval
+        dim_dict = {i : int(dim) for i, dim in enumerate(new_dims)}
+        logging.info(f"New embedding dimensions : {dim_dict}")
+        config_dict = {
+            "hidden_size" : model_adapter.hidden_size,
+            "layers_num" : len(model_adapter.get_layers()),
+            "do_slice_head" : False,
+            "parallel_blocks" : False,
+            "embedding_dimensions" : {0 : dim_dict[0]},
+            "attention_input_dimensions" : dim_dict,
+            "attention_output_dimensions" : dim_dict,
+            "mlp_input_dimensions" : dim_dict,
+            "mlp_output_dimensions" : {i : dim_dict[i+1] for i in range(len(dim_dict.keys()) - 1)},
+            "head_dimension" : model_adapter.hidden_size,
+            "const_dimension" : None,
+        }
+        config_dict["mlp_output_dimensions"][config_dict["layers_num"] - 1] = model_adapter.hidden_size
+        bi_slice_config = SlicingConfig.from_dict(config_dict)
+        scheduler = ConfigSlicingScheduler(bi_slice_config)
+
+
     rotate.rotate_and_slice(model_adapter, train_loader, scheduler, final_orientation=args.final_orientation)
 
     if args.save_dir:

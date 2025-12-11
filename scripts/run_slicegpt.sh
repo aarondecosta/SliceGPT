@@ -26,10 +26,11 @@ pip install -e .[experiment]
 python experiments/run_slicegpt.py \
            --model meta-llama/Llama-2-7b-hf \
            --save-dir models/llama_2_7b_hf \
-           --sparsity 0.25 \
+           --sparsity 0.5 \
            --device cuda:0 \
-           --eval-baseline \
            --do-block-importance \
+           --slicing-scheduler config \
+           --eval-baseline \
            --no-wandb \
            --hf-token $HF_TOKEN
 
