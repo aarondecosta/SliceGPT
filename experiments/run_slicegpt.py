@@ -255,8 +255,7 @@ def slicing_main(args: argparse.Namespace) -> None:
     elif args.slicing_scheduler == "config" and args.do_block_importance:
         bi_scores = np.array(bi_scores)
         bi_scores -= bi_scores.mean()
-        bi_scores = 1 + bi_scores
-        new_dims = bi_scores * model_adapter.hidden_size * (1-args.sparsity)
+        new_dims = bi_scores * model_adapter.hidden_size * args.sparsity + model_adapter.hidden_size * (1 - args.sparsity)
         new_dims = new_dims.round().astype(int)
         new_dims = (new_dims / args.round_interval).round() * args.round_interval
         dim_dict = {i : int(dim) for i, dim in enumerate(new_dims)}

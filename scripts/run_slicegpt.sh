@@ -2,9 +2,9 @@
 
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48000M
-#SBATCH --time=0-10:00
+#SBATCH --time=0-8:00
 #SBATCH --account=
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:h100:1
 #SBATCH --output=logs/slice-gpt-llama-2-7b-hf-%j.out
 #SBATCH --error=logs/slice-gpt-llama-2-7b-hf-%j.err
 #SBATCH --mail-user=
