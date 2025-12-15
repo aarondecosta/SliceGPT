@@ -33,5 +33,3 @@ python experiments/run_slicegpt.py \
            --eval-baseline \
            --no-wandb \
            --hf-token $HF_TOKEN
-
-
